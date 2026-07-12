@@ -36,8 +36,24 @@ This project was created through protocol analysis, HID inspection, and interope
 
 # Screenshots
 
-*(Add screenshots here)*
+## Main Window
 
+![Main Window](/mainpage.png)
+
+## RGB Profile Editor
+
+![RGB Profile](/rgbprofile.png)
+
+## DPI Profile Editor
+
+![DPI Profile](/dpiprofile.png)
+
+## Profiles
+
+![Profiles](/profiles.png)
+
+## Tray
+![Tray](/tray.png)
 ---
 
 # Why this project exists
