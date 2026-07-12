@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-APP_DIR="${HYPERX_SAGA_CONTROL_APP_DIR:-$HOME/.local/share/hyperx-saga-control}"
-export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m hyperx_saga_control "$@"
