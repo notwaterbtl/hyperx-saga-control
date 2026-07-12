@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=HyperX Saga Control
-Comment=Control HyperX Pulsefire Saga Pro battery, RGB, brightness, and DPI profiles
-Exec=__BIN__ --start-minimized
-Icon=hyperx-saga-control
-Terminal=false
-Categories=Settings;HardwareSettings;Qt;
-StartupNotify=false
