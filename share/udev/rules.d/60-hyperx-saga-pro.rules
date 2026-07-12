@@ -1,0 +1,12 @@
+# HyperX Pulsefire Saga Pro hidraw access for Linux userspace control.
+# This rule is intentionally limited to the Saga Pro wired and 2.4 GHz PIDs.
+# It uses a dedicated group instead of granting access to all hidraw devices.
+# The installer creates the group and adds the current user.
+
+# Wired USB mode: 03f0:04bf
+ACTION=="add|change", KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="04bf", GROUP="hyperx", MODE:="0660", TAG+="uaccess"
+ACTION=="add|change", KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="03f0", ENV{ID_MODEL_ID}=="04bf", GROUP="hyperx", MODE:="0660", TAG+="uaccess"
+
+# 2.4 GHz wireless dongle mode: 03f0:06bf
+ACTION=="add|change", KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="06bf", GROUP="hyperx", MODE:="0660", TAG+="uaccess"
+ACTION=="add|change", KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="03f0", ENV{ID_MODEL_ID}=="06bf", GROUP="hyperx", MODE:="0660", TAG+="uaccess"
