@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import traceback
+import time
 from pathlib import Path
 
 from .config import Profile, ProfileStore, load_settings, save_settings
@@ -16,6 +17,9 @@ from .protocol import (
     format_report,
     normalize_color,
     scan_devices,
+    WIRED_POLLING_RATES,
+    WIRELESS_POLLING_RATES,
+    WIRELESS_ONLY_POLLING_RATES,
 )
 
 try:
@@ -73,6 +77,8 @@ class MainWindow(QMainWindow):
         self.selected_device: HidDevice | None = None
         self.current_color = QColor('#00aaff')
         self.last_battery: int | None = None
+        self.last_low_battery_notify_mono = 0.0
+        self.low_battery_active = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(820, 620)
@@ -115,6 +121,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_status_tab(), 'Status')
         tabs.addTab(self._build_rgb_tab(), 'RGB Profile')
         tabs.addTab(self._build_dpi_tab(), 'DPI Profile')
+        tabs.addTab(self._build_polling_tab(), 'Polling')
         tabs.addTab(self._build_profiles_tab(), 'Local Profiles')
         tabs.addTab(self._build_log_tab(), 'Log')
         outer.addWidget(tabs, 1)
@@ -125,15 +132,55 @@ class MainWindow(QMainWindow):
         box = QGroupBox('Battery and mode')
         form = QFormLayout(box)
         self.battery_label = QLabel('Unknown')
+        self.power_label = QLabel('Unknown')
+        self.temperature_label = QLabel('Unknown')
+        self.voltage_label = QLabel('Unknown')
+        self.raw_battery_label = QLabel('Unknown')
+        self.raw_battery_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.mode_label = QLabel('Unknown')
         self.refresh_battery_button = QPushButton('Refresh battery now')
         self.auto_battery_check = QCheckBox('Refresh battery in the tray every 60 seconds')
         self.auto_battery_check.setChecked(True)
         form.addRow('Battery:', self.battery_label)
+        form.addRow('Power state:', self.power_label)
+        form.addRow('Temperature:', self.temperature_label)
+        form.addRow('Battery voltage:', self.voltage_label)
+        form.addRow('Raw 51 02:', self.raw_battery_label)
         form.addRow('Mode:', self.mode_label)
         form.addRow('', self.refresh_battery_button)
         form.addRow('', self.auto_battery_check)
         layout.addWidget(box)
+
+        warn_box = QGroupBox('Low battery warning')
+        warn_form = QFormLayout(warn_box)
+        self.low_battery_enabled_check = QCheckBox('Show a desktop notification when battery falls below the selected level')
+        self.low_battery_enabled_check.setChecked(bool(self.settings.get('low_battery_enabled', True)))
+
+        self.low_battery_threshold_spin = QSpinBox()
+        self.low_battery_threshold_spin.setRange(1, 99)
+        self.low_battery_threshold_spin.setSuffix('%')
+        self.low_battery_threshold_spin.setValue(int(self.settings.get('low_battery_threshold', 20)))
+
+        self.low_battery_repeat_spin = QSpinBox()
+        self.low_battery_repeat_spin.setRange(1, 1440)
+        self.low_battery_repeat_spin.setSuffix(' min')
+        self.low_battery_repeat_spin.setValue(int(self.settings.get('low_battery_repeat_minutes', 30)))
+
+        self.low_battery_only_on_battery_check = QCheckBox('Only warn when the mouse is on battery power')
+        self.low_battery_only_on_battery_check.setChecked(bool(self.settings.get('low_battery_only_on_battery', True)))
+
+        self.test_low_battery_button = QPushButton('Test low-battery notification')
+
+        warn_form.addRow('', self.low_battery_enabled_check)
+        warn_form.addRow('Warn at or below:', self.low_battery_threshold_spin)
+        warn_form.addRow('Repeat warning every:', self.low_battery_repeat_spin)
+        warn_form.addRow('', self.low_battery_only_on_battery_check)
+        warn_form.addRow('', self.test_low_battery_button)
+        layout.addWidget(warn_box)
+
+        note = QLabel('Low-battery warnings are handled by this Linux app. The mouse firmware may have its own NGENUITY-controlled warning, but that packet is not implemented yet.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
         layout.addStretch(1)
         return w
 
@@ -196,6 +243,26 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return w
 
+    def _build_polling_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        box = QGroupBox('Polling / report rate')
+        form = QFormLayout(box)
+        self.polling_combo = QComboBox()
+        self.polling_status_label = QLabel('Polling is stored in the native 0x32 DPI/profile table. Wireless exposes 4000/2000 Hz plus lower rates; wired exposes 1000 Hz and below.')
+        self.polling_status_label.setWordWrap(True)
+        self.save_polling_button = QPushButton('Apply / save polling rate to mouse')
+        self.update_polling_options()
+        form.addRow('Polling rate:', self.polling_combo)
+        form.addRow('', self.save_polling_button)
+        form.addRow('Status:', self.polling_status_label)
+        layout.addWidget(box)
+        note = QLabel('Known mapping: 4000=0x02, 2000=0x04, 1000=0x08, 500=0x10, 250=0x20, 125=0x40. 4000 Hz and 2000 Hz are treated as wireless-only for the Saga Pro; wired mode is limited to 1000 Hz and below. Saving polling rewrites the current DPI table from the DPI tab so your stages are preserved.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return w
+
     def _build_profiles_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -206,7 +273,7 @@ class MainWindow(QMainWindow):
         self.save_local_profile_button = QPushButton('Save current UI as local profile')
         self.load_local_profile_button = QPushButton('Load selected local profile')
         self.delete_local_profile_button = QPushButton('Delete selected local profile')
-        self.apply_all_button = QPushButton('Apply all to mouse: save DPI + save RGB')
+        self.apply_all_button = QPushButton('Apply all to mouse: save RGB + DPI + polling')
         grid.addWidget(QLabel('Selected profile:'), 0, 0)
         grid.addWidget(self.profile_combo, 0, 1)
         grid.addWidget(QLabel('Profile name:'), 1, 0)
@@ -234,11 +301,18 @@ class MainWindow(QMainWindow):
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
         self.refresh_battery_button.clicked.connect(self.refresh_battery)
         self.auto_battery_check.toggled.connect(self.on_auto_battery_toggled)
+        self.low_battery_enabled_check.toggled.connect(self.save_low_battery_settings)
+        self.low_battery_threshold_spin.valueChanged.connect(self.save_low_battery_settings)
+        self.low_battery_repeat_spin.valueChanged.connect(self.save_low_battery_settings)
+        self.low_battery_only_on_battery_check.toggled.connect(self.save_low_battery_settings)
+        self.test_low_battery_button.clicked.connect(self.test_low_battery_notification)
         self.color_button.clicked.connect(self.pick_color)
         self.pick_color_button.clicked.connect(self.pick_color)
         self.live_rgb_button.clicked.connect(self.apply_live_rgb)
         self.save_rgb_button.clicked.connect(self.save_rgb_profile)
         self.save_dpi_button.clicked.connect(self.save_dpi_profile)
+        self.save_polling_button.clicked.connect(self.save_polling_profile)
+        self.polling_combo.currentIndexChanged.connect(self.save_default_polling_setting)
         self.profile_combo.currentTextChanged.connect(lambda name: self.profile_name.setText(name))
         self.load_local_profile_button.clicked.connect(lambda: self.load_profile_to_ui(self.profile_combo.currentText()))
         self.save_local_profile_button.clicked.connect(self.save_profile_from_ui)
@@ -275,6 +349,7 @@ class MainWindow(QMainWindow):
             brightness=self.brightness_spin.value(),
             dpi=[s.value() for s in self.dpi_spins],
             active_stage=self.active_stage_combo.currentData(),
+            polling_hz=int(self.polling_combo.currentData()) if hasattr(self, 'polling_combo') else 1000,
         )
 
     def load_profile_to_ui(self, name: str) -> None:
@@ -289,6 +364,10 @@ class MainWindow(QMainWindow):
         idx = self.active_stage_combo.findData(int(p.active_stage))
         if idx >= 0:
             self.active_stage_combo.setCurrentIndex(idx)
+        if hasattr(self, 'polling_combo'):
+            pidx = self.polling_combo.findData(int(getattr(p, 'polling_hz', 1000)))
+            if pidx >= 0:
+                self.polling_combo.setCurrentIndex(pidx)
         self.log(f'Loaded local profile: {p.name}')
 
     def save_profile_from_ui(self) -> None:
@@ -353,6 +432,7 @@ class MainWindow(QMainWindow):
             self.device_combo.setCurrentIndex(index)
             self.selected_device = self.devices[index]
             self.update_device_status()
+            self.update_polling_options()
             self.log(f'Found {len(self.devices)} Saga config device(s). Selected {self.selected_device.label}')
             if self.auto_battery_check.isChecked():
                 self.refresh_battery()
@@ -369,6 +449,7 @@ class MainWindow(QMainWindow):
             self.settings['last_device'] = self.selected_device.path
             save_settings(self.settings)
             self.update_device_status()
+            self.update_polling_options()
             if self.auto_battery_check.isChecked():
                 self.refresh_battery()
 
@@ -390,21 +471,96 @@ class MainWindow(QMainWindow):
         if not self.selected_device:
             return
         try:
-            pct, responses = self.device().battery_percent(seconds=1.0)
-            if pct is None:
+            status, responses = self.device().battery_status(seconds=1.0)
+            if status is None or status.percent is None:
                 self.battery_label.setText('Unknown')
+                self.power_label.setText('Unknown')
+                self.temperature_label.setText('Unknown')
+                self.voltage_label.setText('Unknown')
+                self.raw_battery_label.setText('No 51 02 response')
                 self.log('Battery query returned no 51 02 battery response.')
                 for r in responses:
                     self.log(f'  response: {format_report(r, 24)}')
             else:
-                self.last_battery = pct
-                self.battery_label.setText(f'{pct}%')
-                self.log(f'Battery: {pct}%')
+                self.last_battery = status.percent
+                self.battery_label.setText(f'{status.percent}%')
+                self.power_label.setText(status.charging_text)
+                if status.temperature_c is not None:
+                    self.temperature_label.setText(f'{status.temperature_c} °C')
+                else:
+                    self.temperature_label.setText('Unknown')
+                if status.voltage_mv is not None:
+                    self.voltage_label.setText(f'{status.voltage_mv} mV')
+                else:
+                    self.voltage_label.setText('Unknown')
+                self.raw_battery_label.setText(status.raw_hex(16))
+                self.log(
+                    'Battery: ' +
+                    f'{status.percent}% | {status.charging_text} | ' +
+                    f'state=0x{status.state_candidate:02x} ' +
+                    f'temperature={status.temperature_c}C ' +
+                    f'voltage={status.voltage_mv}mV | ' +
+                    f'raw={status.raw_hex(16)}'
+                )
+            if status is not None:
+                self.check_low_battery_warning(status)
             self.update_tray_text()
         except PermissionError as exc:
             self.show_error('Permission denied', 'Cannot open hidraw device. Install the udev rule, then unplug/replug the mouse or dongle.')
         except Exception as exc:
             self.show_error('Battery refresh failed', exc)
+
+
+    def save_low_battery_settings(self) -> None:
+        self.settings['low_battery_enabled'] = bool(self.low_battery_enabled_check.isChecked())
+        self.settings['low_battery_threshold'] = int(self.low_battery_threshold_spin.value())
+        self.settings['low_battery_repeat_minutes'] = int(self.low_battery_repeat_spin.value())
+        self.settings['low_battery_only_on_battery'] = bool(self.low_battery_only_on_battery_check.isChecked())
+        save_settings(self.settings)
+
+    def test_low_battery_notification(self) -> None:
+        threshold = int(self.low_battery_threshold_spin.value())
+        battery = self.last_battery if self.last_battery is not None else threshold
+        self.show_low_battery_notification(battery, threshold, test=True)
+
+    def show_low_battery_notification(self, percent: int, threshold: int, test: bool = False) -> None:
+        title = 'HyperX Saga battery low' if not test else 'HyperX Saga battery notification test'
+        msg = f'Mouse battery is at {percent}%. Warning threshold: {threshold}%.'
+        if self.selected_device:
+            msg += f'\nMode: {self.selected_device.mode}'
+        if self.tray and self.tray.isVisible():
+            self.tray.showMessage(title, msg, QSystemTrayIcon.MessageIcon.Warning, 8000)
+        else:
+            QMessageBox.warning(self, title, msg)
+        self.log(f'{title}: {msg.replace(chr(10), " | ")}')
+
+    def check_low_battery_warning(self, status) -> None:
+        if status is None or status.percent is None:
+            return
+        if not self.low_battery_enabled_check.isChecked():
+            self.low_battery_active = False
+            return
+
+        threshold = int(self.low_battery_threshold_spin.value())
+        repeat_seconds = int(self.low_battery_repeat_spin.value()) * 60
+        only_on_battery = self.low_battery_only_on_battery_check.isChecked()
+
+        on_battery = status.state_candidate == 0x00
+        if only_on_battery and not on_battery:
+            # Do not warn while charging or full. Reset so a future unplugged low state can notify.
+            self.low_battery_active = False
+            return
+
+        if status.percent > threshold:
+            self.low_battery_active = False
+            return
+
+        now = time.monotonic()
+        should_notify = (not self.low_battery_active) or (now - self.last_low_battery_notify_mono >= repeat_seconds)
+        if should_notify:
+            self.show_low_battery_notification(status.percent, threshold)
+            self.last_low_battery_notify_mono = now
+            self.low_battery_active = True
 
     def on_auto_battery_toggled(self, checked: bool) -> None:
         if checked:
@@ -418,7 +574,9 @@ class MainWindow(QMainWindow):
             return
         mode = self.selected_device.mode if self.selected_device else 'no device'
         batt = f'{self.last_battery}%' if self.last_battery is not None else 'battery unknown'
-        self.tray.setToolTip(f'{APP_NAME}\n{mode}\n{batt}')
+        power = getattr(self, 'power_label', None)
+        power_text = power.text() if power is not None else ''
+        self.tray.setToolTip(f'{APP_NAME}\n{mode}\n{batt}\n{power_text}')
         action = getattr(self, 'battery_menu_action', None)
         if action is not None:
             action.setText(f'Battery: {batt} ({mode})')
@@ -459,14 +617,81 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.show_error('RGB profile save failed', exc)
 
+    def update_polling_options(self) -> None:
+        if not hasattr(self, 'polling_combo'):
+            return
+        current = int(self.polling_combo.currentData() or self.settings.get('default_polling_rate', 1000)) if self.polling_combo.count() else int(self.settings.get('default_polling_rate', 1000))
+        mode = self.selected_device.mode if self.selected_device else 'unknown'
+        rates = WIRELESS_POLLING_RATES if mode == 'wireless' else WIRED_POLLING_RATES
+        self.polling_combo.blockSignals(True)
+        self.polling_combo.clear()
+        for rate in rates:
+            suffix = ''
+            if rate == 4000:
+                suffix = ' (2.4 GHz wireless)'
+            elif rate == 2000:
+                suffix = ' (2.4 GHz wireless only)'
+            self.polling_combo.addItem(f'{rate} Hz{suffix}', rate)
+        idx = self.polling_combo.findData(current)
+        if idx < 0:
+            idx = self.polling_combo.findData(1000)
+        if idx >= 0:
+            self.polling_combo.setCurrentIndex(idx)
+        self.polling_combo.blockSignals(False)
+        if hasattr(self, 'polling_status_label'):
+            if mode == 'wireless':
+                self.polling_status_label.setText('Wireless mode: 4000, 2000, 1000, 500, 250, and 125 Hz are available. 4000 Hz and 2000 Hz are wireless-only; 500/250/125 use the same interval-code formula.')
+            elif mode == 'wired':
+                self.polling_status_label.setText('Wired mode: 1000, 500, 250, and 125 Hz are available. 2000 Hz and 4000 Hz are hidden because they are wireless-only on the Saga Pro.')
+            else:
+                self.polling_status_label.setText('Select or connect a Saga Pro config device to choose valid polling rates.')
+
+    def selected_polling_rate(self) -> int:
+        return int(self.polling_combo.currentData() or 1000)
+
+    def validate_polling_mode(self, polling: int) -> None:
+        if self.selected_device is not None and self.selected_device.mode != 'wireless' and polling in WIRELESS_ONLY_POLLING_RATES:
+            raise RuntimeError('2000 Hz and 4000 Hz are wireless-only on the Saga Pro. Switch to 2.4 GHz wireless mode, or choose 1000 Hz or lower.')
+
+    def save_default_polling_setting(self) -> None:
+        self.settings['default_polling_rate'] = self.selected_polling_rate()
+        save_settings(self.settings)
+
     def save_dpi_profile(self) -> None:
         try:
             dpis = [s.value() for s in self.dpi_spins]
             active = int(self.active_stage_combo.currentData())
-            responses = self.device().save_dpi_profile(dpis, active_stage=active)
-            self.log(f'Saved DPI profile dpis={dpis} active_stage={active}. Responses={len(responses)}')
+            polling = self.selected_polling_rate()
+            self.validate_polling_mode(polling)
+            responses = self.device().save_dpi_profile(dpis, active_stage=active, polling_hz=polling)
+            self.log(f'Saved DPI profile dpis={dpis} active_stage={active} polling={polling}Hz. Responses={len(responses)}')
         except Exception as exc:
             self.show_error('DPI profile save failed', exc)
+
+    def save_polling_profile(self) -> None:
+        try:
+            dpis = [s.value() for s in self.dpi_spins]
+            active = int(self.active_stage_combo.currentData())
+            polling = self.selected_polling_rate()
+            self.validate_polling_mode(polling)
+            color = self.current_color.name().lower()
+            brightness = self.brightness_spin.value()
+            responses = self.device().save_polling_profile(
+                dpis=dpis,
+                active_stage=active,
+                polling_hz=polling,
+                color=color,
+                brightness_percent=brightness,
+            )
+            self.settings['polling_hz'] = polling
+            save_settings(self.settings)
+            self.log(f'Saved polling profile polling={polling}Hz with RGB={color} brightness={brightness}% dpis={dpis} active_stage={active}. Responses={len(responses)}')
+            if polling in (2000, 4000):
+                self.polling_status_label.setText(f'Saved {polling} Hz wireless polling. Reconnect/measure to verify if needed.')
+            else:
+                self.polling_status_label.setText(f'Saved {polling} Hz polling.')
+        except Exception as exc:
+            self.show_error('Polling profile save failed', exc)
 
     def apply_all_to_mouse(self) -> None:
         self.save_profile_from_ui()

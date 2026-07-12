@@ -17,6 +17,7 @@ class Profile:
     brightness: int = 100
     dpi: list[int] = None  # type: ignore[assignment]
     active_stage: int = 0
+    polling_hz: int = 1000
 
     def __post_init__(self) -> None:
         if self.dpi is None:
@@ -33,6 +34,7 @@ class Profile:
             brightness=int(data.get('brightness', 100)),
             dpi=[int(x) for x in dpi],
             active_stage=int(data.get('active_stage', 0)),
+            polling_hz=int(data.get('polling_hz', data.get('polling_rate', 1000))),
         )
 
     def to_dict(self) -> Dict[str, Any]:

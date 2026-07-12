@@ -19,6 +19,33 @@ KNOWN_PIDS = {PID_WIRED, PID_WIRELESS}
 FORCE_CONFIG_ENV = 'HYPERX_SAGA_CONFIG_DEV'
 
 DEFAULT_DPI = [400, 800, 1600, 3200]
+
+# Native Saga Pro polling/report-rate field inside report 0x32.
+# Decoded from wireless NGENUITY captures and generalized from the
+# interval-byte relationship:
+#   rate_hz = 8000 / interval_code
+# Confirmed / product-supported mapping:
+#   1000 Hz -> interval byte 0x08
+#   2000 Hz -> interval byte 0x04  (2.4 GHz wireless only)
+#   4000 Hz -> interval byte 0x02  (2.4 GHz wireless only)
+# Derived from the same interval formula:
+#   500 Hz  -> 0x10
+#   250 Hz  -> 0x20
+#   125 Hz  -> 0x40
+# Wired mode is limited in the UI to 1000 Hz and below.
+# Wireless mode exposes the full set, including 2000 Hz and 4000 Hz.
+POLLING_RATE_TO_CODE = {
+    125: 0x40,
+    250: 0x20,
+    500: 0x10,
+    1000: 0x08,
+    2000: 0x04,
+    4000: 0x02,
+}
+POLLING_CODE_TO_RATE = {v: k for k, v in POLLING_RATE_TO_CODE.items()}
+WIRELESS_POLLING_RATES = [4000, 2000, 1000, 500, 250, 125]
+WIRED_POLLING_RATES = [1000, 500, 250, 125]
+WIRELESS_ONLY_POLLING_RATES = {2000, 4000}
 DEFAULT_DPI_COLORS = [
     (0xFF, 0x00, 0x00),  # stage 0: red
     (0x00, 0x00, 0xFF),  # stage 1: blue
@@ -71,6 +98,65 @@ class HidDevice:
     @property
     def label(self) -> str:
         return f"{self.mode} {self.role}: {self.path} ({self.vid:04x}:{self.pid:04x})"
+
+
+@dataclasses.dataclass(frozen=True)
+class BatteryStatus:
+    """Decoded HyperX Pulsefire Saga Pro battery/status response.
+
+    Query:
+        host -> mouse: 50 02 00 00 ...
+
+    Response:
+        mouse -> host: 51 02 PP SS TT 00 VV VV ...
+
+    Confirmed fields:
+        PP    battery percentage, 0-100
+        SS    power/charge state
+              0x00 = on battery
+              0x01 = USB power present / charging
+              0x02 = full / 100% / charge complete
+        TT    temperature in degrees Celsius
+        VV VV battery or charger voltage in millivolts, little endian
+    """
+    percent: int | None
+    raw: bytes
+    state_candidate: int | None = None
+    field4_le: int | None = None
+    voltage_mv_candidate: int | None = None
+
+    @property
+    def temperature_c(self) -> int | None:
+        return self.field4_le
+
+    @property
+    def voltage_mv(self) -> int | None:
+        return self.voltage_mv_candidate
+
+    @property
+    def charging_candidate(self) -> bool | None:
+        if self.state_candidate is None:
+            return None
+        if self.state_candidate == 0x00:
+            return False
+        if self.state_candidate in (0x01, 0x02):
+            return True
+        return None
+
+    @property
+    def charging_text(self) -> str:
+        if self.state_candidate is None:
+            return 'Unknown'
+        if self.state_candidate == 0x00:
+            return 'On battery'
+        if self.state_candidate == 0x01:
+            return 'USB power / charging'
+        if self.state_candidate == 0x02:
+            return 'Full / 100% / charge complete'
+        return f'Unknown power state 0x{self.state_candidate:02x}'
+
+    def raw_hex(self, limit: int = 16) -> str:
+        return ' '.join(f'{b:02x}' for b in self.raw[:limit])
 
 
 def _sysfs_device_path(path: str) -> Path:
@@ -258,6 +344,18 @@ def code_to_dpi(code: int) -> int:
     return (code + 1) * 50
 
 
+def polling_rate_to_code(rate_hz: int) -> int:
+    try:
+        return POLLING_RATE_TO_CODE[int(rate_hz)]
+    except KeyError as exc:
+        supported = ', '.join(str(x) for x in sorted(POLLING_RATE_TO_CODE))
+        raise ValueError(f'supported polling rates are: {supported} Hz') from exc
+
+
+def polling_code_to_rate(code: int) -> int | None:
+    return POLLING_CODE_TO_RATE.get(int(code))
+
+
 class SagaDevice:
     def __init__(self, hidraw: str):
         self.hidraw = hidraw
@@ -310,7 +408,7 @@ class SagaDevice:
         finally:
             os.close(fd)
 
-    def battery_percent(self, seconds: float = 1.0) -> tuple[Optional[int], list[bytes]]:
+    def battery_status(self, seconds: float = 1.0) -> tuple[Optional[BatteryStatus], list[bytes]]:
         # Confirmed Saga query: 50 02 -> 51 02 <battery percent> ...
         fd = self._open()
         try:
@@ -321,8 +419,22 @@ class SagaDevice:
             os.close(fd)
         for rep in responses:
             if len(rep) >= 3 and rep[0] == 0x51 and rep[1] == 0x02:
-                return int(rep[2]), responses
+                percent = int(rep[2]) if rep[2] <= 100 else None
+                state = int(rep[3]) if len(rep) > 3 else None
+                field4 = int.from_bytes(rep[4:6], 'little') if len(rep) >= 6 else None
+                voltage = int.from_bytes(rep[6:8], 'little') if len(rep) >= 8 else None
+                return BatteryStatus(
+                    percent=percent,
+                    raw=bytes(rep),
+                    state_candidate=state,
+                    field4_le=field4,
+                    voltage_mv_candidate=voltage,
+                ), responses
         return None, responses
+
+    def battery_percent(self, seconds: float = 1.0) -> tuple[Optional[int], list[bytes]]:
+        status, responses = self.battery_status(seconds=seconds)
+        return (status.percent if status else None), responses
 
     def set_live_rgb(self, color: str, brightness_percent: int) -> list[bytes]:
         r, g, b = parse_hex_color(color)
@@ -351,21 +463,68 @@ class SagaDevice:
         return self.write_reports(packets)
 
     @staticmethod
-    def build_dpi_packet(dpis: list[int], active_stage: int = 0, colors: Optional[list[tuple[int, int, int]]] = None) -> bytes:
+    def build_dpi_packet(dpis: list[int], active_stage: int = 0, colors: Optional[list[tuple[int, int, int]]] = None, polling_hz: int = 1000, profile: bool = True) -> bytes:
         if len(dpis) != 4:
             raise ValueError('DPI table must have exactly four stages')
         if not 0 <= active_stage <= 3:
             raise ValueError('active_stage must be 0..3')
         colors = colors or DEFAULT_DPI_COLORS
-        prefix = [0x32, 0x01, 0x01, 0x00, 0x08, 0x0F, active_stage & 0xFF]
+        polling_code = polling_rate_to_code(polling_hz)
+        # Native Saga Pro 0x32 profile table:
+        #   32 01 PP 00 RR 0f AA <4x DPI/color records>
+        # PP = 0x00 for immediate/live write, 0x01 for profile write.
+        # RR = polling/report-rate interval byte. Confirmed 1000/4000 and
+        # generalized using rate_hz = 8000 / interval_code.
+        # AA = active DPI stage.
+        prefix = [0x32, 0x01, 0x01 if profile else 0x00, 0x00, polling_code, 0x0F, active_stage & 0xFF]
         for dpi, (r, g, b) in zip(dpis, colors):
             code = dpi_to_code(int(dpi))
             prefix += [code & 0xFF, (code >> 8) & 0xFF, r & 0xFF, g & 0xFF, b & 0xFF]
         return report(prefix)
 
-    def save_dpi_profile(self, dpis: list[int], active_stage: int = 0) -> list[bytes]:
-        pkt = self.build_dpi_packet(dpis, active_stage=active_stage)
+    def save_dpi_profile(self, dpis: list[int], active_stage: int = 0, polling_hz: int = 1000) -> list[bytes]:
+        pkt = self.build_dpi_packet(dpis, active_stage=active_stage, polling_hz=polling_hz, profile=True)
         return self.write_reports([pkt], read_after=0.25)
+
+    def save_polling_profile(
+        self,
+        dpis: list[int],
+        active_stage: int = 0,
+        polling_hz: int = 1000,
+        color: str | None = None,
+        brightness_percent: int = 100,
+    ) -> list[bytes]:
+        # NGENUITY first sends an immediate 0x32 write (profile byte 0x00),
+        # then saves the same table with profile byte 0x01. Polling and DPI
+        # share this table, so pass current UI DPI stages to preserve them.
+        # Observed polling codes inside report 0x32:
+        #   1000 Hz -> byte 4 = 0x08
+        #   4000 Hz -> byte 4 = 0x02
+        # 2000 Hz is derived from the same interval-code formula and
+        # treated as wireless-only for the Saga Pro. Other standard rates
+        # are derived from rate_hz = 8000 / code.
+        live = self.build_dpi_packet(dpis, active_stage=active_stage, polling_hz=polling_hz, profile=False)
+        profile_pkt = self.build_dpi_packet(dpis, active_stage=active_stage, polling_hz=polling_hz, profile=True)
+        packets = [live]
+        if color is not None:
+            r, g, b = parse_hex_color(color)
+            intensity = percent_to_intensity(brightness_percent)
+            packets += [
+                report([0x44, 0x03, 0x01, 0x01, 0x00, 0x01]),
+                report([0x44, 0x04, 0x00, 0x00, r, g, b]),
+                report([0x42, 0x02, 0x01, 0x00, 0x06, 0x32]),
+                report([0x40, 0x01, 0x01, 0x00, intensity]),
+            ]
+        else:
+            packets += [report([0x42, 0x02, 0x01, 0x00, 0x06, 0x32])]
+        packets += [
+            profile_pkt,
+            report([0x20, 0x05, 0x01, 0x00, 0x01]),
+            report([0x22, 0x07, 0x01, 0x00, 0x01]),
+            report([0x50, 0x01, 0x14, 0x01]),
+            report([0x36, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02]),
+        ]
+        return self.write_reports(packets, read_after=0.25)
 
 
 def format_report(rep: bytes, limit: int = 16) -> str:
