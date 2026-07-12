@@ -5,6 +5,7 @@
 SagaCtrl is an open-source Linux application that provides native configuration for the HyperX Pulsefire Saga Pro without requiring HyperX NGENUITY or Windows.
 
 This project was created through protocol analysis, HID inspection, and interoperability research to improve Linux compatibility for the Pulsefire Saga Pro.
+With help of AI of course, this is a litle time-waster project that actually helped me lol.
 
 ---
 
