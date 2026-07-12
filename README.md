@@ -55,6 +55,9 @@ With help of AI of course, this is a litle time-waster project that actually hel
 
 ## Tray
 ![Tray](/tray.png)
+
+## Polling 
+![Polling](/polling.png)
 ---
 
 ## Project status
