@@ -4,8 +4,7 @@
 
 SagaCtrl is an open-source Linux application that provides native configuration for the HyperX Pulsefire Saga Pro without requiring HyperX NGENUITY or Windows.
 
-This project was created through protocol analysis, HID inspection, and interoperability research to improve Linux compatibility for the Pulsefire Saga Pro.
-With help of AI of course, this is a litle time-waster project that actually helped me lol.
+This project was created through protocol analysis, HID inspection, and interoperability research to improve Linux compatibility for the Pulsefire Saga Pro. With the help of AI of course, this is a little time-waster project that actually helped me lol.
 
 ---
 
@@ -14,11 +13,18 @@ With help of AI of course, this is a litle time-waster project that actually hel
 ### Supported
 
 * Battery percentage
+* Battery power state: on battery, charging / USB power, and full / charge complete
+* Battery temperature reporting
+* Battery voltage reporting
+* Configurable low-battery desktop warnings
 * Native RGB colour control
 * RGB brightness control
 * RGB profile saving to onboard memory
 * Four-stage DPI profile editing
 * DPI profile saving
+* Polling-rate configuration
+  * Wired USB: 125 Hz, 250 Hz, 500 Hz, 1000 Hz
+  * 2.4 GHz wireless: 125 Hz, 250 Hz, 500 Hz, 1000 Hz, 2000 Hz, 4000 Hz
 * Local profile management
 * Wired USB support
 * Wireless (2.4 GHz) support
@@ -27,7 +33,9 @@ With help of AI of course, this is a litle time-waster project that actually hel
 
 ### Planned
 
-* Wireless polling rate configuration (1000 Hz / 4000 Hz)
+* RGB lighting effects such as breathing and cycle/rainbow
+* Button remapping
+* Macro recording / assignment
 * Additional firmware information
 * Automatic profile switching
 * Improved UI polish
@@ -54,10 +62,13 @@ With help of AI of course, this is a litle time-waster project that actually hel
 ![Profiles](/profiles.png)
 
 ## Tray
+
 ![Tray](/tray.png)
 
-## Polling 
+## Polling
+
 ![Polling](/polling.png)
+
 ---
 
 ## Project status
@@ -65,18 +76,36 @@ With help of AI of course, this is a litle time-waster project that actually hel
 | Feature | Status |
 | --- | --- |
 | Battery percentage | Working |
+| Battery charging / power state | Working |
+| Battery temperature | Working |
+| Battery voltage | Working |
+| Low-battery warnings | Working |
 | Live RGB | Working |
 | RGB brightness | Working |
 | RGB saved to onboard memory | Working |
 | DPI stage editing | Working |
 | DPI profile persistence | Working |
+| Polling-rate control, wired USB | Working |
+| Polling-rate control, 2.4 GHz wireless | Working |
 | Local app profiles | Working |
 | Wired USB mode | Working |
 | 2.4 GHz wireless mode | Working |
 | KDE tray app | Working |
-| Wireless 4 kHz polling switch | Not implemented yet |
+| RGB effects: breathing / cycle | Planned |
+| Button remapping | Planned |
+| Macros | Planned |
 
-Wireless 4 kHz polling is intentionally disabled until the required packet sequence is confirmed.
+Polling support currently exposes:
+
+```text
+Wired USB:
+  125 Hz, 250 Hz, 500 Hz, 1000 Hz
+
+2.4 GHz wireless:
+  125 Hz, 250 Hz, 500 Hz, 1000 Hz, 2000 Hz, 4000 Hz
+```
+
+2000 Hz and 4000 Hz are treated as wireless-only modes.
 
 ---
 
@@ -102,7 +131,7 @@ The app scans `/dev/hidraw*` automatically, so the exact node number does not ha
 
 ## Why this project exists
 
-HyperX NGENUITY is Windows-only. Linux can use the mouse for normal pointer input, but Linux users do not get official access to configuration features such as RGB, DPI profiles, battery reporting, and onboard profile management.
+HyperX NGENUITY is Windows-only. Linux can use the mouse for normal pointer input, but Linux users do not get official access to configuration features such as RGB, DPI profiles, polling rates, battery reporting, charging status, and onboard profile management.
 
 This project exists to improve Linux interoperability for hardware that users already own.
 
@@ -230,6 +259,12 @@ Shows:
 - detected device
 - wired/wireless mode
 - battery percentage
+- power state: on battery, charging / USB power, or full / charge complete
+- battery temperature
+- battery voltage
+- raw battery/status packet for debugging
+
+The app also includes configurable low-battery notifications. You can choose the warning percentage, repeat interval, and whether warnings should only appear while the mouse is running on battery power.
 
 ### RGB Profile
 
@@ -255,6 +290,34 @@ Stage 2: 1600
 Stage 3: 3200
 ```
 
+### Polling
+
+Allows you to configure the mouse polling/report rate.
+
+Available wired USB polling options:
+
+```text
+125 Hz
+250 Hz
+500 Hz
+1000 Hz
+```
+
+Available 2.4 GHz wireless polling options:
+
+```text
+125 Hz
+250 Hz
+500 Hz
+1000 Hz
+2000 Hz
+4000 Hz
+```
+
+2000 Hz and 4000 Hz are wireless-only and are hidden or blocked while the mouse is in wired mode.
+
+Polling and DPI share the same native Saga Pro profile table, so the app preserves the DPI values currently shown in the DPI tab when saving a polling-rate change.
+
 ### Local Profiles
 
 Stores local presets in:
@@ -269,6 +332,8 @@ Local profiles can include:
 - brightness
 - DPI stages
 - active stage
+- polling rate
+- low-battery warning settings
 
 ---
 
@@ -280,11 +345,35 @@ High-level summary:
 
 | Function | Native report family |
 | --- | --- |
-| Battery query | `50 02 -> 51 02` |
+| Battery / power / temperature / voltage query | `50 02 -> 51 02` |
 | DPI table | `0x32` |
+| Polling-rate table | `0x32` |
 | Live RGB | `0x44` |
 | Brightness | `0x40` |
 | Onboard RGB profile save | `0x44`, `0x40`, `0x50`, `0x36` profile sequence |
+
+Battery/status packets decode as:
+
+```text
+51 02 PP SS TT 00 VV VV ...
+```
+
+Where:
+
+```text
+PP       = battery percentage
+SS       = power state
+TT       = temperature in °C
+VV VV    = battery voltage in millivolts, little-endian
+```
+
+Observed power-state values:
+
+```text
+0x00 = on battery / not charging
+0x01 = USB power present / charging
+0x02 = full / 100% / charge complete
+```
 
 DPI uses this observed encoding:
 
@@ -299,6 +388,23 @@ Examples:
 800 DPI  -> 0x0f
 1600 DPI -> 0x1f
 3200 DPI -> 0x3f
+```
+
+Polling uses the native `0x32` profile table as well. The observed/derived polling interval encoding is:
+
+```text
+rate_hz = 8000 / interval_code
+```
+
+Examples:
+
+```text
+4000 Hz -> 0x02  wireless only
+2000 Hz -> 0x04  wireless only
+1000 Hz -> 0x08
+ 500 Hz -> 0x10
+ 250 Hz -> 0x20
+ 125 Hz -> 0x40
 ```
 
 See [`docs/protocol-notes.md`](docs/protocol-notes.md) for more information.
@@ -351,7 +457,9 @@ Useful contributions include:
 - packaging work
 - protocol documentation
 - additional HyperX device research
-- wireless polling captures for 1000 Hz / 4000 Hz support
+- RGB lighting-effect captures for breathing/cycle modes
+- button-remapping captures
+- macro captures and testing
 
 Please do not submit proprietary HyperX files or copyrighted NGENUITY assets.
 
