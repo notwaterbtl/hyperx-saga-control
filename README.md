@@ -137,9 +137,20 @@ This project exists to improve Linux interoperability for hardware that users al
 
 ---
 
-## Install: Fedora, Bazzite, KDE Plasma
+## Install: most Linux distributions
 
-The recommended install uses a Python virtual environment. It does **not** require installing PySide6 globally with `dnf` or `rpm-ostree`.
+The recommended install uses a private Python virtual environment. It does **not** require installing PySide6 globally with your distro package manager.
+
+Supported as a best-effort target:
+
+* Fedora / Bazzite / Fedora Atomic
+* Debian / Ubuntu / Linux Mint / Pop!_OS
+* Arch / Manjaro / EndeavourOS
+* openSUSE
+* Alpine
+* Void Linux
+* Solus
+* other modern Linux distributions with Python 3.10+ and `udev`
 
 Clone the repo:
 
@@ -148,7 +159,19 @@ git clone https://github.com/YOUR_USERNAME/hyperx-saga-control.git
 cd hyperx-saga-control
 ```
 
-Run the installer:
+If your system is missing Python venv/pip or common Qt runtime libraries, run the helper first:
+
+```bash
+./scripts/install-linux-deps.sh
+```
+
+You can preview the commands first:
+
+```bash
+./scripts/install-linux-deps.sh --dry-run
+```
+
+Then run the installer:
 
 ```bash
 ./install.sh
@@ -160,8 +183,8 @@ The installer will:
 2. create a private Python venv
 3. install Python dependencies into that venv
 4. install a launcher into `~/.local/bin/hyperx-saga-control`
-5. install a KDE `.desktop` file
-6. install a KDE autostart entry
+5. install an XDG/KDE `.desktop` file
+6. install an autostart entry unless disabled
 7. install a udev rule for Saga Pro hidraw access
 
 After install, unplug and replug the mouse cable or 2.4 GHz dongle.
@@ -180,7 +203,9 @@ Or search for:
 HyperX Saga Control
 ```
 
-in the KDE application launcher.
+in your application launcher.
+
+For distro-specific notes, see [`docs/INSTALL_LINUX.md`](docs/INSTALL_LINUX.md).
 
 ---
 
@@ -259,6 +284,11 @@ Shows:
 - detected device
 - wired/wireless mode
 - battery percentage
+- charging / USB power / on-battery state
+- charge-complete state
+- battery temperature
+- battery voltage
+- low-battery notification settings
 - power state: on battery, charging / USB power, or full / charge complete
 - battery temperature
 - battery voltage
@@ -318,6 +348,32 @@ Available 2.4 GHz wireless polling options:
 
 Polling and DPI share the same native Saga Pro profile table, so the app preserves the DPI values currently shown in the DPI tab when saving a polling-rate change.
 
+### Polling Rate
+
+Allows you to set the mouse report rate.
+
+Wired mode supports:
+
+```text
+125 Hz
+250 Hz
+500 Hz
+1000 Hz
+```
+
+Wireless mode supports:
+
+```text
+125 Hz
+250 Hz
+500 Hz
+1000 Hz
+2000 Hz
+4000 Hz
+```
+
+2000 Hz and 4000 Hz are wireless-only on the Saga Pro.
+
 ### Local Profiles
 
 Stores local presets in:
@@ -332,6 +388,8 @@ Local profiles can include:
 - brightness
 - DPI stages
 - active stage
+- polling rate
+- low-battery warning settings
 - polling rate
 - low-battery warning settings
 
@@ -397,6 +455,40 @@ rate_hz = 8000 / interval_code
 ```
 
 Examples:
+
+```text
+4000 Hz -> 0x02  wireless only
+2000 Hz -> 0x04  wireless only
+1000 Hz -> 0x08
+ 500 Hz -> 0x10
+ 250 Hz -> 0x20
+ 125 Hz -> 0x40
+```
+
+Battery/status uses this observed structure:
+
+```text
+51 02 PP SS TT 00 VV VV ...
+```
+
+Where:
+
+```text
+PP       = battery percentage
+SS       = power state
+TT       = temperature in °C
+VV VV    = battery voltage in millivolts, little-endian
+```
+
+Observed power states:
+
+```text
+0x00 = on battery
+0x01 = USB power / charging
+0x02 = full / charge complete
+```
+
+Polling-rate interval codes:
 
 ```text
 4000 Hz -> 0x02  wireless only
