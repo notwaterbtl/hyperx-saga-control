@@ -1,0 +1,17 @@
+Lighting minimal:
+  L10_lighting_solid_static_ff00aa.pcap
+  L20_lighting_breathing_ff00aa.pcap
+  L30_lighting_cycle_rainbow.pcap
+  L90_lighting_explicit_save_to_device.pcap
+
+Button remap minimal:
+  B10_button_side_back_to_keyboard_a.pcap
+  B11_button_side_forward_to_keyboard_b.pcap
+  B90_button_restore_defaults.pcap
+  B91_button_explicit_save_to_device.pcap
+
+Macro minimal:
+  M10_macro_create_a_b_50ms.pcap
+  M20_macro_assign_to_side_back.pcap
+  M30_macro_remove_from_side_back.pcap
+  M90_macro_explicit_save_to_device.pcap

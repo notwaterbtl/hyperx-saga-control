@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self.last_battery: int | None = None
         self.last_low_battery_notify_mono = 0.0
         self.low_battery_active = False
+        self.allow_exit = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(820, 620)
@@ -707,10 +708,13 @@ class MainWindow(QMainWindow):
             self.show_error('Apply profile failed', exc)
 
     def closeEvent(self, event):  # type: ignore[override]
+        if self.allow_exit:
+            super().closeEvent(event)
+            return
         if self.tray and self.tray.isVisible():
             event.ignore()
             self.hide()
-            self.tray.showMessage(APP_NAME, 'Still running in the system tray.', QSystemTrayIcon.MessageIcon.Information, 2500)
+            self.tray.showMessage(APP_NAME, 'Still running in the system tray. Use Exit SagaCtrl from the tray menu to quit completely.', QSystemTrayIcon.MessageIcon.Information, 3500)
         else:
             super().closeEvent(event)
 
@@ -737,11 +741,15 @@ class SagaApplication:
         battery_action.triggered.connect(self.window.refresh_battery)
         apply_action = QAction('Apply Selected Profile to Mouse')
         apply_action.triggered.connect(self.window.apply_last_profile_from_tray)
-        quit_action = QAction('Quit')
-        quit_action.triggered.connect(self.app.quit)
+        hide_action = QAction('Hide to Tray')
+        hide_action.triggered.connect(self.window.hide)
+        quit_action = QAction('Exit SagaCtrl')
+        quit_action.setToolTip('Completely stop the background tray process')
+        quit_action.triggered.connect(self.exit_from_tray)
         menu.addAction(battery_status_action)
         menu.addSeparator()
         menu.addAction(open_action)
+        menu.addAction(hide_action)
         menu.addAction(battery_action)
         menu.addAction(apply_action)
         menu.addSeparator()
@@ -750,6 +758,19 @@ class SagaApplication:
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
         self.window.update_tray_text()
+
+    def exit_from_tray(self) -> None:
+        # Make the tray Quit/Exit action really terminate the process.
+        # Closing the main window still hides to tray by default.
+        self.window.allow_exit = True
+        try:
+            self.window.battery_timer.stop()
+            self.window.device_timer.stop()
+        except Exception:
+            pass
+        self.tray.hide()
+        self.window.close()
+        self.app.quit()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
